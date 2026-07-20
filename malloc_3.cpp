@@ -35,18 +35,22 @@ void initializeArray(MallocMetadata arr[MAX_ORDER+1]) {
         dummies[i] = head;
         arr[i] = dummies[i];
     }
-    void* ptr = sbrk(TOTAL_MEMORY_BLOCK);
-    for (int i=0; i < 32; ++i) {
+    // find the current sbrk
+    void* current_sbrk = sbrk(0);
+    uintptr_t alignment  = (uintptr_t)current_sbrk % (TOTAL_MEMORY_BLOCK * MEMORY_BLOCKS);
+    void* ptr = sbrk(TOTAL_MEMORY_BLOCK*(MEMORY_BLOCKS+1) - alignment);
+    ptr = (char *)ptr + alignment;
+    for (int i=0; i < MEMORY_BLOCKS; ++i) {
         MallocMetadata* current = (MallocMetadata*)ptr;
-        current->size = 128*1024 - sizeof(MallocMetadata);
+        current->size = TOTAL_MEMORY_BLOCK;
         current->is_free = true;
-        void* new_ptr = (char *)ptr + 1024*128;
+        void* new_ptr = (char *)ptr + TOTAL_MEMORY_BLOCK;
         if (i == MEMORY_BLOCKS - 1) {
             current->next = nullptr;
         } else {
             current->next = (MallocMetadata *)new_ptr;
         }
-        void* old_ptr = (char *)ptr - 128*1024;
+        void* old_ptr = (char *)ptr - TOTAL_MEMORY_BLOCK;
         if (i==0) {
             current->prev = &arr[MAX_ORDER];
             arr[MAX_ORDER].next = current;
@@ -89,12 +93,10 @@ void* get_memory_block_with_metadata(int order) {
     if (memoryBlock == nullptr) {
         return NULL;
     }
-    memoryBlock->size = (memoryBlock->size + sizeof(MallocMetadata)) / 2;
-    int newSize = memoryBlock->size;
-    memoryBlock -> size -= sizeof(MallocMetadata);
-    void* newMemoryBlock = (char *)memoryBlock + newSize;
+    memoryBlock->size = memoryBlock->size / 2;
+    void* newMemoryBlock = (char *)memoryBlock + memoryBlock->size;
     MallocMetadata* buddy = (MallocMetadata *) newMemoryBlock;
-    buddy->size = newSize;
+    buddy->size = memoryBlock->size;
     buddy->is_free = true;
     buddy->prev = &arr[order];
     buddy->next = nullptr;
@@ -171,14 +173,55 @@ void* scalloc(size_t num, size_t size) {
 
 }
 
+MallocMetadata* merge(MallocMetadata* metadata_p, MallocMetadata* metadata_buddy) {
+    // remove buddy from its list
+    metadata_buddy->prev->next = metadata_buddy->next;
+    if (metadata_buddy->next != nullptr) {
+        metadata_buddy->next->prev = metadata_buddy->prev;
+    }
+    metadata_buddy->next = nullptr;
+    metadata_buddy->prev = nullptr;
+    if ((uintptr_t)metadata_p > (uintptr_t)metadata_buddy) {
+        metadata_buddy->size = 2*(metadata_buddy->size);
+        return metadata_buddy;
+    }
+    metadata_p->size = 2*(metadata_p->size);
+    return metadata_p;
+
+}
+
 void sfree(void* p) {
     if (p == nullptr) {
         return;
     }
-    // moving p to the location of is_free
-    char* metadata_old_p = (char *)p - sizeof(MallocMetadata);
-    metadata_old_p = metadata_old_p + sizeof(size_t);
-    *(bool *)metadata_old_p = true;
+    char* metadata_old_p_addr = (char *)p - sizeof(MallocMetadata);
+    MallocMetadata* metadata_old_p = (MallocMetadata*) metadata_old_p_addr;
+    void* metadata_buddy_addr = (void *)((uintptr_t)metadata_old_p ^ metadata_old_p->size);
+    MallocMetadata* metadata_buddy = (MallocMetadata *) metadata_buddy_addr;
+    if (metadata_buddy->is_free && metadata_buddy->size == metadata_old_p->size
+        && metadata_old_p->size != TOTAL_MEMORY_BLOCK) {
+        // merge p and its buddy
+        metadata_old_p = merge(metadata_old_p, metadata_buddy);
+        p = (char *)metadata_old_p + sizeof(MallocMetadata);
+        return sfree(p);
+
+
+    } else {
+        int order = find_order(metadata_old_p->size);
+        MallocMetadata* current = &arr[order];
+        while (current->next != nullptr && (uintptr_t)current->next < (uintptr_t)metadata_old_p) {
+            current = current->next;
+        }
+        metadata_old_p->next = current->next;
+        current->next = metadata_old_p;
+        metadata_old_p->prev = current;
+        if (metadata_old_p->next != nullptr) {
+            metadata_old_p->next->prev = metadata_old_p;
+        }
+        metadata_old_p->is_free = true;
+
+    }
+
 
 
 }
