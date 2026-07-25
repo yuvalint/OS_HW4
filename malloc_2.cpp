@@ -41,21 +41,19 @@ void* smalloc(size_t size) {
     if (ptr == (void*)(-1)) {
         return NULL;
     }
+    MallocMetadata* ptr_metadata = (MallocMetadata*) ptr;
     // define curr next to be ptr
-    current->next = (MallocMetadata*)ptr;
+    current->next->prev = ptr_metadata;
+    current->next = ptr_metadata;
     // define size of malloc metadata
-    *(size_t *)ptr = size;
-    ptr = (char *)ptr + sizeof(size_t);
+    ptr_metadata->size = size;
     // define is_free of malloc metadata
-    *(bool *)ptr = false;
-    // add 7 bytes for padding
-    ptr = (char *)ptr + sizeof(bool) + 7;
+    ptr_metadata->is_free = false;
     // define next of malloc metadata
-    *(MallocMetadata* *)ptr = &tail;
-    ptr = (char *)ptr + sizeof(MallocMetadata*);
+    ptr_metadata->next = &tail;
     // define prev of malloc metadata
-    *(MallocMetadata* *)ptr = current;
-    ptr = (char *)ptr + sizeof(MallocMetadata*);
+    ptr_metadata->prev = current;
+    ptr = (char *)ptr + sizeof(MallocMetadata);
     // ptr points after the metadata, to the actual space that the user will use
     return ptr;
 
@@ -76,26 +74,32 @@ void sfree(void* p) {
         return;
     }
     // moving p to the location of is_free
-    char* metadata_old_p = (char *)p - sizeof(MallocMetadata);
-    metadata_old_p = metadata_old_p + sizeof(size_t);
-    *(bool *)metadata_old_p = true;
+    char* metadata_old_p_addr = (char *)p - sizeof(MallocMetadata);
+    MallocMetadata* metadata_old_p = (MallocMetadata *)metadata_old_p_addr;
+    metadata_old_p->is_free = true;
 
 
 }
 
 void* srealloc(void* oldp, size_t size) {
+    if (size == 0) {
+        return nullptr;
+    }
     if (oldp == nullptr) {
         return smalloc(size);
     }
-    char* metadata_old_p = (char *)oldp - sizeof(MallocMetadata);
-    size_t curr_size = *(size_t *)metadata_old_p;
-    if (size <= curr_size) {
+    char* metadata_old_p_addr = (char *)oldp - sizeof(MallocMetadata);
+    MallocMetadata* metadata_old_p = (MallocMetadata *)metadata_old_p_addr;
+    if (size <= metadata_old_p->size) {
         return oldp;
     }
     void* newp = smalloc(size);
     if (newp == nullptr) {
         return NULL;
     }
+    // copy old data to new memory allocation
+    memmove(newp, oldp, metadata_old_p->size);
+    // free old memory allocation
     sfree(oldp);
     return newp;
 
@@ -132,6 +136,7 @@ size_t _num_allocated_blocks() {
     MallocMetadata* current = &head;
     while (current->next != &tail) {
         allocated_blocks++;
+        current = current->next;
     }
     return allocated_blocks;
 }
@@ -141,6 +146,7 @@ size_t _num_allocated_bytes() {
     MallocMetadata* current = &head;
     while (current->next != nullptr) {
         allocated_bytes += current->size;
+        current = current->next;
     }
     return allocated_bytes;
 }
